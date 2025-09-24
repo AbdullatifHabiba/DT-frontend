@@ -44,9 +44,9 @@ jobs:
         script: |
           cd /opt/dependency-track
           echo "🔄 Pulling new frontend image..."
-          docker-compose pull frontend
+          docker compose pull frontend
           echo "🚀 Restarting frontend service..."
-          docker-compose up -d frontend
+          docker compose up -d frontend
           echo "✅ Frontend deployment complete!"
           echo "📊 Checking working service status..."
-          docker-compose ps frontend
+          docker compose ps frontend
