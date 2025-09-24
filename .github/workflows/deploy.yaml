@@ -1,0 +1,54 @@
+name: Frontend CI/CD
+
+on:
+  push:
+    paths: ['DT-frontend/**']
+    branches: [main, master, 'feature/**']
+  pull_request:
+    paths: ['DT-frontend/**']
+    branches: [main, master, 'feature/**']
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  deploy-frontend:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Configure AWS Credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+        aws-region: ${{ secrets.AWS_REGION }}
+        
+    - name: Login to Public ECR
+      run: |
+        aws ecr-public get-login-password --region us-east-1 | docker login --username AWS --password-stdin public.ecr.aws
+        
+    - name: Build Frontend Image
+      run: |
+        docker build -t public.ecr.aws/a1x0e8q5/abdu/dt-frontend:latest -f dockerfile.frontend .
+        
+    - name: Push to Public ECR
+      run: |
+        docker push public.ecr.aws/a1x0e8q5/abdu/dt-frontend:latest
+        
+    - name: Deploy to Server
+      uses: appleboy/ssh-action@v1.0.0
+      with:
+        host: ${{ secrets.SERVER_IP }}
+        username: ${{ secrets.SERVER_USER }}
+        key: ${{ secrets.SSH_PRIVATE_KEY }}
+        script: |
+          cd /opt/dependency-track
+          echo "🔄 Pulling new frontend image..."
+          docker-compose pull frontend
+          echo "🚀 Restarting frontend service..."
+          docker-compose up -d frontend
+          echo "✅ Frontend deployment complete!"
+          echo "📊 Checking service status..."
+          docker-compose ps frontend
