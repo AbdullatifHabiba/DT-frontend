@@ -48,5 +48,5 @@ jobs:
           echo "🚀 Restarting frontend service..."
           docker-compose up -d frontend
           echo "✅ Frontend deployment complete!"
-          echo "📊 Checking service status..."
+          echo "📊 Checking working service status..."
           docker-compose ps frontend
