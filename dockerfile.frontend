@@ -4,11 +4,11 @@ FROM node:20-alpine AS builder
 WORKDIR /app
 
 # Copy package files and install dependencies
-COPY ./DT-frontend/package.json ./DT-frontend/package-lock.json ./
+COPY package.json package-lock.json ./
 RUN npm ci
 
 # Copy source code and build
-COPY ./DT-frontend/ .
+COPY . .
 ENV NODE_OPTIONS=--openssl-legacy-provider
 RUN npm run build
 
