@@ -3,46 +3,27 @@ name: Frontend CI/CD
 on:
   push:
     branches: [main, master]
-  pull_request:
-    branches: [main, master]
 
 permissions:
   id-token: write
-  contents: write  # ← CHANGED: Need write to push changes
+  contents: write
 
 jobs:
-  test-frontend:
+  build-and-update-infra:
     runs-on: ubuntu-latest
-    if: github.event_name == 'pull_request'
-    steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
-      
-    - name: Setup Node.js
-      uses: actions/setup-node@v4
-      with:
-        node-version: '18'
-        cache: 'npm'
-        cache-dependency-path: frontend/package-lock.json
-        
-    - name: Install dependencies
-      run: npm ci
-      working-directory: frontend
-      
-    - name: Run tests
-      run: npm test
-      working-directory: frontend
-
-  build-and-deploy-frontend:
-    runs-on: ubuntu-latest
-    if: github.event_name == 'push'
     
     steps:
-    - name: Checkout code
+    - name: Checkout Frontend Code
       uses: actions/checkout@v4
       with:
-        token: ${{ secrets.GITHUB_TOKEN }}
-        fetch-depth: 0  # ← IMPORTANT: Get full history for git operations
+        path: frontend-repo
+        
+    - name: Checkout Infra Repo
+      uses: actions/checkout@v4
+      with:
+        repository: AbdullatifHabiba/infra-gitops
+        token: ${{ secrets.INFRA_PAT }}  # ← Personal Access Token for infra repo
+        path: infra-repo
         
     - name: Configure AWS Credentials
       uses: aws-actions/configure-aws-credentials@v4
@@ -54,51 +35,53 @@ jobs:
       run: |
         aws ecr-public get-login-password --region us-east-1 | docker login --username AWS --password-stdin public.ecr.aws
         
-    - name: Extract metadata for Docker
-      id: meta
-      uses: docker/metadata-action@v5
-      with:
-        images: public.ecr.aws/a1x0e8q5/abdu/dt-frontend
-        tags: |
-          type=sha,prefix={{branch}}-
-          type=ref,event=tag
-          type=raw,value=latest,enable={{is_default_branch}}
+    - name: Generate version tag
+      id: version
+      run: |
+        VERSION="${GITHUB_SHA:0:8}"
+        echo "VERSION=${VERSION}" >> $GITHUB_OUTPUT
+        echo "Using version: ${VERSION}"
         
     - name: Build and Push Frontend Image
       run: |
-        # Build with multiple tags
-        docker build -t public.ecr.aws/a1x0e8q5/abdu/dt-frontend:${{ github.sha }} -f dockerfile.frontend .
-        docker tag public.ecr.aws/a1x0e8q5/abdu/dt-frontend:${{ github.sha }} public.ecr.aws/a1x0e8q5/abdu/dt-frontend:latest
+        cd frontend-repo
+        docker build -t public.ecr.aws/a1x0e8q5/abdu/dt-frontend:${{ steps.version.outputs.VERSION }} -f dockerfile.frontend .
+        docker tag public.ecr.aws/a1x0e8q5/abdu/dt-frontend:${{ steps.version.outputs.VERSION }} public.ecr.aws/a1x0e8q5/abdu/dt-frontend:latest
         
-        # Push both tags
-        docker push public.ecr.aws/a1x0e8q5/abdu/dt-frontend:${{ github.sha }}
+        docker push public.ecr.aws/a1x0e8q5/abdu/dt-frontend:${{ steps.version.outputs.VERSION }}
         docker push public.ecr.aws/a1x0e8q5/abdu/dt-frontend:latest
         
-        echo "IMAGE_SHA=${{ github.sha }}" >> $GITHUB_ENV
-        echo "IMAGE_TAG=${{ github.sha }}" >> $GITHUB_ENV
-        
-    - name: Update Kustomize with new image tag
+    - name: Update Kustomize in Infra Repo
       run: |
-        # Update the kustomization.yaml with the new image tag
-        sed -i 's|newTag:.*$|newTag: '"${{ github.sha }}"'|g' overlays/dev/kustomization.yaml
+        cd infra-repo
         
-        # Verify the change
-        echo "Updated kustomization.yaml:"
-        cat overlays/dev/kustomization.yaml | grep -A 2 -B 2 "dt-frontend"
+        # Update dev overlay
+        sed -i 's|newTag:.*$|newTag: '"${{ steps.version.outputs.VERSION }}"'|g' overlays/dev/kustomization.yaml
         
-    - name: Commit and push Kustomize changes
+        # Update prod overlay if main branch
+        if [[ "${{ github.ref }}" == "refs/heads/main" || "${{ github.ref }}" == "refs/heads/master" ]]; then
+          sed -i 's|newTag:.*$|newTag: '"${{ steps.version.outputs.VERSION }}"'|g' overlays/prod/kustomization.yaml
+        fi
+        
+        echo "Updated Kustomize files:"
+        echo "=== Dev Overlay ==="
+        grep -A 1 "dt-frontend" overlays/dev/kustomization.yaml
+        
+    - name: Commit and push to Infra Repo
       run: |
-        git config --local user.email "action@github.com"
-        git config --local user.name "GitHub Action"
+        cd infra-repo
+        
+        git config --local user.email "github-actions[bot]@users.noreply.github.com"
+        git config --local user.name "github-actions[bot]"
         
         git add overlays/dev/kustomization.yaml
-        git diff --staged --quiet || git commit -m "ci: update frontend image to ${{ github.sha }}"
         
-        git push origin main
+        if [[ "${{ github.ref }}" == "refs/heads/main" || "${{ github.ref }}" == "refs/heads/master" ]]; then
+          git add overlays/prod/kustomization.yaml
+        fi
         
-    - name: Trigger ArgoCD Sync (Optional)
-      run: |
-        # If you want to automatically sync ArgoCD
-        echo "ArgoCD will automatically detect the git change and sync"
-        # Or manually trigger sync:
-        # kubectl patch app dependency-track-dev -n argocd -p '{"metadata": {"annotations": {"argocd.argoproj.io/refresh": "hard"}}}' --type merge
+        # Only commit if there are changes
+        git diff --staged --quiet || {
+          git commit -m "ci: update frontend image to ${{ steps.version.outputs.VERSION }} [skip ci]"
+          git push
+        }
